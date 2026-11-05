@@ -7,15 +7,14 @@ from datetime import date
 
 CONFIG = {
     "endpoint": "https://apis.data.go.kr/1741000/stdgSexdAgeOneHh/selectStdgSexdAgeOneHh",
-    "params": {
-        "stdgCd": "5000000000",   # 제주특별자치도 (법정동코드)
-        "srchFrYm": "{ym}",       # 조회 시작 연월
-        "srchToYm": "{ym}",       # 조회 끝 연월
-        "lv": "3",                # 3 = 읍면동 단위
-        "regSeCd": "1",           # 1 = 전체
-        "type": "JSON",
-        "numOfRows": "100",
-    },
+    "params": {"srchFrYm": "{ym}", "srchToYm": "{ym}", "regSeCd": "1", "type": "JSON", "numOfRows": "100"},
+    # 자료 없음이면 다음 묶음으로 다시 물어봄. 제주도 5000000000, 제주시 5011000000, 서귀포시 5013000000 / lv 3 읍면동, 4 통반
+    "tries": [
+        {"codes": ["5000000000"], "lv": "3"},
+        {"codes": ["5011000000", "5013000000"], "lv": "3"},
+        {"codes": ["5011000000", "5013000000"], "lv": "4"},
+        {"codes": ["5000000000"], "lv": "4"},
+    ],
     "fields": {
         "city": "sggNm", "dong": "dongNm", "dong_alt": "stdgNm",
         "age_cols": {"0": "20세 미만", "10": "20세 미만", "20": "20대", "30": "30대", "40": "40대", "50": "50대", "60": "60대", "70": "70대", "80": "80세 이상", "90": "80세 이상", "100": "80세 이상"},
@@ -47,11 +46,11 @@ def find(obj, key):
     return None
 
 
-def fetch_month(ym):
+def fetch_one(ym, code, lv):
     rows, page = [], 1
     while True:
         q = {k: v.replace("{ym}", ym) for k, v in CONFIG["params"].items()}
-        q.update({"serviceKey": KEY, "pageNo": str(page)})
+        q.update({"serviceKey": KEY, "pageNo": str(page), "stdgCd": code, "lv": lv})
         url = CONFIG["endpoint"] + "?" + urllib.parse.urlencode(q)
         with urllib.request.urlopen(url, timeout=60) as r:
             raw = r.read().decode("utf-8", "replace")
@@ -59,9 +58,12 @@ def fetch_month(ym):
             body = json.loads(raw)
         except ValueError:
             raise RuntimeError("JSON 이 아닌 응답: " + raw[:300])
-        code = str(find(body, "resultCode") or "00")
-        if code not in ("00", "0", "0000", "INFO-0"):
-            raise RuntimeError("결과 코드 " + code + " " + str(find(body, "resultMsg") or ""))
+        rc = str(find(body, "resultCode") or "00")
+        msg = str(find(body, "resultMsg") or "")
+        if "NODATA" in msg.upper() or rc == "3":
+            return []
+        if rc not in ("00", "0", "0000", "INFO-0"):
+            raise RuntimeError("결과 코드 " + rc + " " + msg)
         items = find(body, "item")
         if items is None:
             items = find(body, "items") or []
@@ -69,12 +71,21 @@ def fetch_month(ym):
             items = [items]
         rows += items
         total = int(find(body, "totalCount") or len(rows))
-        if page == 1:
-            print(ym, "전체", total, "줄")
         if len(rows) >= total or not items:
             return rows
         page += 1
         time.sleep(0.3)
+
+
+def fetch_month(ym):
+    for t in CONFIG["tries"]:
+        rows = []
+        for code in t["codes"]:
+            rows += fetch_one(ym, code, t["lv"])
+        print(ym, "stdgCd", "+".join(t["codes"]), "lv", t["lv"], "→", len(rows), "줄")
+        if rows:
+            return rows
+    return []
 
 
 def to_dong(rows):
@@ -98,7 +109,7 @@ def to_dong(rows):
 def months_to_try():
     t = date.today().replace(day=1)
     out = []
-    for back in (1, 2):
+    for back in (1, 2, 3):
         y, m = t.year, t.month - back
         while m <= 0:
             y, m = y - 1, m + 12
