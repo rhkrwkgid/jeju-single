@@ -140,8 +140,7 @@ def main():
     latest = max(reps)
     os.makedirs(MD_DIR, exist_ok=True)
     path = f"{MD_DIR}/{latest}.md"
-    is_new = latest not in old.get("reports", {}) or not os.path.exists(path)
-    open(path, "w", encoding="utf-8").write(to_md(reps[latest], out["sample"]))
+    is_new = latest not in old.get("reports", {}) or not os.path.exists(path) or bool(old.get("sample")) != out["sample"]
     print(path, "보고서 작성 (새 달)" if is_new else "보고서 갱신")
     if is_new and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
