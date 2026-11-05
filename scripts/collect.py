@@ -8,10 +8,10 @@ from datetime import date
 CONFIG = {
     "endpoint": "https://apis.data.go.kr/1741000/stdgSexdAgeOneHh/selectStdgSexdAgeOneHh",
     "params": {"srchFrYm": "{ym}", "srchToYm": "{ym}", "regSeCd": "1", "type": "JSON", "numOfRows": "100"},
-    # 자료 없음이면 다음 묶음으로 다시 물어봄. 제주도 5000000000, 제주시 5011000000, 서귀포시 5013000000 / lv 3 읍면동, 4 통반
+    # 자료 없음이면 다음 묶음으로. 제주시 5011000000, 서귀포시 5013000000, 제주도 5000000000 / lv 3 읍면동, 4 통반
     "tries": [
-        {"codes": ["5000000000"], "lv": "3"},
         {"codes": ["5011000000", "5013000000"], "lv": "3"},
+        {"codes": ["5000000000"], "lv": "3"},
         {"codes": ["5011000000", "5013000000"], "lv": "4"},
         {"codes": ["5000000000"], "lv": "4"},
     ],
@@ -52,8 +52,15 @@ def fetch_one(ym, code, lv):
         q = {k: v.replace("{ym}", ym) for k, v in CONFIG["params"].items()}
         q.update({"serviceKey": KEY, "pageNo": str(page), "stdgCd": code, "lv": lv})
         url = CONFIG["endpoint"] + "?" + urllib.parse.urlencode(q)
-        with urllib.request.urlopen(url, timeout=60) as r:
-            raw = r.read().decode("utf-8", "replace")
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=90) as r:
+                    raw = r.read().decode("utf-8", "replace")
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(5)
         try:
             body = json.loads(raw)
         except ValueError:
@@ -84,6 +91,8 @@ def fetch_month(ym):
             rows += fetch_one(ym, code, t["lv"])
         print(ym, "stdgCd", "+".join(t["codes"]), "lv", t["lv"], "→", len(rows), "줄")
         if rows:
+            print(ym, "줄 살펴보기: 행정동", len({r.get("dongNm") for r in rows}), "/ 법정동", len({r.get("stdgNm") for r in rows}),
+                  "/ 리 이름 있는 줄", sum(1 for r in rows if r.get("liNm")), "/ 합계", sum(int(float(r.get("totHhCnt") or 0)) for r in rows))
             return rows
     return []
 
@@ -130,38 +139,33 @@ def main():
     data.setdefault("months", {})
     data.update({"sample": False, "ages": AGES,
                  "source": "행정안전부_법정동별(행정동 통반단위) 성/연령별 주민등록 1인세대수 (공공데이터포털)"})
-    targets = []
-    for ym in months_to_try():
-        if ym in data["months"]:
-            print(ym, "이미 받은 달입니다.")
-            break
-        targets.append(ym)
     changed = False
-    for ym in targets:
+
+    def get(ym, why):
+        nonlocal changed
         try:
             rows = fetch_month(ym)
         except Exception as e:
-            print(ym, "받기 실패:", hide(e))
-            continue
+            print(ym, why, "받기 실패:", hide(e))
+            return False
         if not rows:
-            print(ym, "아직 자료가 없습니다.")
-            continue
+            print(ym, why, "아직 자료가 없습니다.")
+            return False
         data["months"][ym] = to_dong(rows)
-        print(ym, "저장:", len(data["months"][ym]), "개 읍면동")
+        print(ym, why, "저장:", len(data["months"][ym]), "개 읍면동")
         changed = True
+        return True
+
+    for ym in months_to_try():
+        if ym in data["months"] or get(ym, "최근 달"):
+            break
+    if data["months"]:
+        ym = max(data["months"])
         y, m = int(ym[:4]), int(ym[4:])
         last = f"{y}{m - 1:02d}" if m > 1 else f"{y - 1}12"
         for extra, why in ((last, "지난달"), (f"{y - 1}{m:02d}", "작년 같은 달")):
-            if extra in data["months"]:
-                continue
-            try:
-                prow = fetch_month(extra)
-                if prow:
-                    data["months"][extra] = to_dong(prow)
-                    print(extra, why, "자료도 저장")
-            except Exception as e:
-                print(extra, why, "받기 실패:", hide(e))
-        break
+            if extra not in data["months"]:
+                get(extra, why)
     if not changed:
         return
     for old in sorted(data["months"])[:-KEEP_MONTHS]:
